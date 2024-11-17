@@ -21,7 +21,7 @@ def extractMinutiae(img):
         raise ValueError("Invalid image provided.")
 
     # Apply Gaussian blur to reduce noise
-    blurred = cv2.GaussianBlur(img, (5, 5), 0)
+    blurred = cv2.GaussianBlur(img, (3, 3), 0)
 
     # Use adaptive thresholding for binarization
     binaryImg = cv2.adaptiveThreshold(
@@ -29,8 +29,8 @@ def extractMinutiae(img):
         255,
         cv2.ADAPTIVE_THRESH_GAUSSIAN_C,
         cv2.THRESH_BINARY_INV,
-        11,  # Block size (must be odd, e.g., 11 or 15)
-        2  # Constant subtracted from mean
+        25,  # Block size (must be odd, e.g., 11 or 15)
+        -8  # Constant subtracted from mean
     )
 
     # Perform skeletonization
@@ -44,14 +44,17 @@ def extractMinutiae(img):
     for i in range(1, rows - 1):
         for j in range(1, cols - 1):
             if skeleton[i, j] == 255:  # Pixel is part of the skeleton
-                # Extract the 3x3 neighborhood
-                neighborhood = skeleton[i - 1:i + 2, j - 1:j + 2]
+                # Extract the 5 radius neighborhood
+                neighborhood = skeleton[i - 2:i + 3, j - 2:j + 3]
                 white_pixels = np.sum(neighborhood == 255)
 
                 # Apply stricter rules for ridge endings and bifurcations
-                if white_pixels == 2:  # Ridge ending
+                if white_pixels <= 3:
+                    #false positive
+                    continue
+                elif white_pixels <= 4:  # Ridge ending
                     ridgeEnds.append((j, i))
-                elif white_pixels == 4:  # Bifurcation
+                elif white_pixels >= 9:  # Bifurcation
                     bifurcations.append((j, i))
 
     # Remove duplicates and close-by minutiae
@@ -61,7 +64,7 @@ def extractMinutiae(img):
     return ridgeEnds, bifurcations, binaryImg, skeleton
 
 
-def filter_minutiae(minutiae, min_distance=10):
+def filter_minutiae(minutiae, min_distance=1):
     """
     Filter minutiae to remove duplicates and close-by points.
 
