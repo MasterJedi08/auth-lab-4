@@ -22,8 +22,9 @@ def extractMinutiae(img):
 
     # Apply Gaussian blur to reduce noise
     blurred = cv2.GaussianBlur(img, (5, 5), 0)
+    blurred_inv = cv2.GaussianBlur(img, (9, 9), 0)
 
-    blurred_inv = cv2.bitwise_not(blurred)
+    blurred_inv = cv2.bitwise_not(blurred_inv)
 
     # Use adaptive thresholding for binarization
     binaryImg = cv2.adaptiveThreshold(
@@ -41,7 +42,7 @@ def extractMinutiae(img):
         cv2.ADAPTIVE_THRESH_GAUSSIAN_C,
         cv2.THRESH_BINARY_INV,
         21,  # Block size (must be odd, e.g., 11 or 15)
-        -8  # Constant subtracted from mean
+        -5  # Constant subtracted from mean
     )
 
     # Perform skeletonization
