@@ -23,8 +23,15 @@ def extractMinutiae(img):
     # Apply Gaussian blur to reduce noise
     blurred = cv2.GaussianBlur(img, (5, 5), 0)
 
-    # Push gray pixels to either black or white
-    _, binaryImg = cv2.threshold(blurred, 108, 255, cv2.THRESH_BINARY_INV)
+    # Use adaptive thresholding for binarization
+    binaryImg = cv2.adaptiveThreshold(
+        blurred,
+        255,
+        cv2.ADAPTIVE_THRESH_GAUSSIAN_C,
+        cv2.THRESH_BINARY_INV,
+        11,  # Block size (must be odd, e.g., 11 or 15)
+        2  # Constant subtracted from mean
+    )
 
     # Perform skeletonization
     skeleton = cv2.ximgproc.thinning(binaryImg)
@@ -54,7 +61,7 @@ def extractMinutiae(img):
     return ridgeEnds, bifurcations, binaryImg, skeleton
 
 
-def filter_minutiae(minutiae, min_distance=20):
+def filter_minutiae(minutiae, min_distance=10):
     """
     Filter minutiae to remove duplicates and close-by points.
 
@@ -129,7 +136,7 @@ def main():
         visual_img = visualize_minutiae(img, ridge_ends, bifurcations)
 
         # Display processed images
-        cv2.imshow("Binarized Image", binary_img)
+        cv2.imshow("Binarized Image (Adaptive Threshold)", binary_img)
         cv2.imshow("Thinned (Skeletonized) Image", skeleton)
 
         # Display side-by-side images
@@ -147,4 +154,5 @@ def main():
 
 if __name__ == "__main__":
     main()
+
 
