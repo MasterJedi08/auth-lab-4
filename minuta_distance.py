@@ -20,8 +20,11 @@ def extractMinutiae(img):
     if img is None:
         raise ValueError("Invalid image provided.")
 
+    # Apply Gaussian blur to reduce noise
+    blurred = cv2.GaussianBlur(img, (5, 5), 0)
+
     # Push gray pixels to either black or white
-    _, binaryImg = cv2.threshold(img, 127, 255, cv2.THRESH_BINARY_INV)
+    _, binaryImg = cv2.threshold(blurred, 108, 255, cv2.THRESH_BINARY_INV)
 
     # Perform skeletonization
     skeleton = cv2.ximgproc.thinning(binaryImg)
@@ -48,10 +51,10 @@ def extractMinutiae(img):
     ridgeEnds = filter_minutiae(ridgeEnds)
     bifurcations = filter_minutiae(bifurcations)
 
-    return ridgeEnds, bifurcations
+    return ridgeEnds, bifurcations, binaryImg, skeleton
 
 
-def filter_minutiae(minutiae, min_distance=10):
+def filter_minutiae(minutiae, min_distance=20):
     """
     Filter minutiae to remove duplicates and close-by points.
 
@@ -120,10 +123,14 @@ def main():
             continue
 
         # Extract minutiae
-        ridge_ends, bifurcations = extractMinutiae(img)
+        ridge_ends, bifurcations, binary_img, skeleton = extractMinutiae(img)
 
         # Visualize minutiae
         visual_img = visualize_minutiae(img, ridge_ends, bifurcations)
+
+        # Display processed images
+        cv2.imshow("Binarized Image", binary_img)
+        cv2.imshow("Thinned (Skeletonized) Image", skeleton)
 
         # Display side-by-side images
         combined_img = np.hstack((cv2.cvtColor(img, cv2.COLOR_GRAY2BGR), visual_img))
@@ -140,5 +147,4 @@ def main():
 
 if __name__ == "__main__":
     main()
-
 
