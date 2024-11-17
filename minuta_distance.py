@@ -8,6 +8,128 @@ import numpy as np
 from scipy.spatial import distance
 
 
+def enhance_fingerprint(img):
+    """
+    Enhance fingerprint image quality using various preprocessing techniques.
+
+    Parameters:
+        img (numpy.ndarray): Input grayscale fingerprint image
+
+    Returns:
+        numpy.ndarray: Enhanced fingerprint image
+    """
+    # Normalize image
+    normalized = cv2.normalize(img, None, 0, 255, cv2.NORM_MINMAX)
+
+    # Apply CLAHE (Contrast Limited Adaptive Histogram Equalization)
+    clahe = cv2.createCLAHE(clipLimit=2.0, tileGridSize=(5, 5))
+    enhanced = clahe.apply(normalized)
+
+    # Reduce noise while preserving edges
+    denoised = cv2.fastNlMeansDenoising(enhanced, None, h=10, searchWindowSize=21)
+
+    # Enhance local contrast
+    kernel = np.array([[-1, -1, -1], [-1, 9, -1], [-1, -1, -1]])
+    sharpened = cv2.filter2D(denoised, -1, kernel)
+
+    return sharpened
+
+
+def get_crossing_number(neighborhood):
+    """
+    Calculate the crossing number for minutiae detection.
+
+    Parameters:
+        neighborhood (numpy.ndarray): 3x3 binary neighborhood
+
+    Returns:
+        int: Crossing number
+    """
+    pixels = neighborhood.flatten()
+    # Remove center pixel
+    pixels = np.delete(pixels, 4)
+    # Calculate transitions
+    transitions = np.sum(np.abs(pixels[:-1] - pixels[1:])) + abs(pixels[-1] - pixels[0])
+    return transitions // 2
+
+
+def claudeExtractMinutiae(img, min_distance=10):
+    """
+    Extract ridge endings and bifurcations from a fingerprint image.
+
+    Parameters:
+        img (numpy.ndarray): Grayscale fingerprint image (512x512)
+        min_distance (int): Minimum distance between minutiae points
+
+    Returns:
+        tuple: Lists of ridge endings and bifurcations coordinates
+    """
+    if img is None or img.shape != (512, 512):
+        raise ValueError("Invalid image: Must be 512x512 grayscale image")
+
+    # Enhance image
+    enhanced = enhance_fingerprint(img)
+    cv2.imshow('enhahced', enhanced)
+
+    # Binarize image
+    binary = cv2.adaptiveThreshold(
+        enhanced,
+        255,
+        cv2.ADAPTIVE_THRESH_GAUSSIAN_C,
+        cv2.THRESH_BINARY_INV,
+        25,  # Larger block size for better adaptation
+        -8
+    )
+
+    cv2.imshow('binary', binary)
+
+    # Perform skeletonization
+    skeleton = cv2.ximgproc.thinning(binary)
+
+    cv2.imshow('skel', skeleton)
+
+    # Initialize lists for minutiae
+    ridge_endings = []
+    bifurcations = []
+
+    # Pad image to handle border pixels
+    padded = np.pad(skeleton, ((1, 1), (1, 1)), mode='constant', constant_values=0)
+
+    # Scan the image
+    rows, cols = skeleton.shape
+    for i in range(1, rows + 1):
+        for j in range(1, cols + 1):
+            if padded[i, j] == 255:  # Ridge pixel
+                # Get 3x3 neighborhood
+                neighborhood = padded[i - 1:i + 2, j - 1:j + 2]
+                cn = get_crossing_number(neighborhood)
+
+                # cn = 1 for ridge ending
+                # cn = 3 for bifurcation
+                if cn == 1:
+                    ridge_endings.append((j - 1, i - 1))
+                elif cn == 3:
+                    bifurcations.append((j - 1, i - 1))
+
+    def filter_close_points(points, min_dist):
+        """Remove points that are too close to each other"""
+        if not points:
+            return points
+
+        filtered = [points[0]]
+        for point in points[1:]:
+            if all(np.sqrt((p[0] - point[0]) ** 2 + (p[1] - point[1]) ** 2) >= min_dist
+                   for p in filtered):
+                filtered.append(point)
+        return filtered
+
+    # Filter out minutiae that are too close to each other
+    ridge_endings = filter_close_points(ridge_endings, min_distance)
+    bifurcations = filter_close_points(bifurcations, min_distance)
+
+    return ridge_endings, bifurcations
+
+
 def extractMinutiae(img):
     """
     Extract ridge endings and bifurcations from a fingerprint image.
@@ -169,7 +291,7 @@ def minutiae_to_descriptor(minutiae, scale_factor=100, histogram_bins=8):
     return fingerprint_descriptor
 
 
-def fingerprint_matching(train_dir, subject_dir, threshold=0.7):
+def fingerprint_matching(train_dir, subject_dir, threshold=0.01):
     train_descriptors = {}
     total_comparisons = 0
     total_accepts = 0
@@ -245,8 +367,60 @@ def fingerprint_matching(train_dir, subject_dir, threshold=0.7):
     print(f"Total Accepts: {total_accepts}")
     print(f"Total Rejects: {total_rejects}")
 
+def visualize_minutiae(img, ridge_ends, bifurcations):
+    """
+    Visualize ridge endings and bifurcations on the fingerprint image.
+
+    Parameters:
+        img (numpy.ndarray): Original fingerprint image.
+        ridge_ends (list): List of (x, y) coordinates of ridge endings.
+        bifurcations (list): List of (x, y) coordinates of bifurcations.
+    """
+    # Convert the grayscale image to a color image for visualization
+    visual_img = cv2.cvtColor(img, cv2.COLOR_GRAY2BGR)
+
+    # Draw ridge endings (in green)
+    for x, y in ridge_ends:
+        cv2.circle(visual_img, (x, y), 1, (0, 255, 0), -1)
+
+    # Draw bifurcations (in red)
+    for x, y in bifurcations:
+        cv2.circle(visual_img, (x, y), 1, (0, 0, 255), -1)
+
+    return visual_img
+
+def testMatching(train_dir, subject_dir, threshold=0.01):
+    fRidge_ends = []
+    fBifurcations = []
+    sRidge_ends = []
+    sBifurcations = []
+
+
+    # Extract descriptors for training images
+    print("Processing training images...")
+    for train_file in os.listdir(train_dir):
+        if train_file.endswith(".png") and train_file[0] == 'f':  # Assuming PNG format
+            fImg_path = os.path.join(train_dir, train_file)
+            fimg = cv2.imread(fImg_path, cv2.IMREAD_GRAYSCALE)
+            fRidge_ends, fBifurcations = claudeExtractMinutiae(fimg)
+
+            sTrain_file = 's' + train_file[1:]
+            sImg_path = os.path.join(train_dir, sTrain_file)
+            simg = cv2.imread(sImg_path, cv2.IMREAD_GRAYSCALE)
+            sRidge_ends, sBifurcations = claudeExtractMinutiae(simg)
+
+            # Display side-by-side images
+            fVis = visualize_minutiae(fimg, fRidge_ends, fBifurcations)
+            fCombined_img = np.hstack((cv2.cvtColor(fimg, cv2.COLOR_GRAY2BGR), fVis))
+            cv2.imshow("%s - Original (L) | Vis (R)" % train_file, fCombined_img)
+
+            sVis = visualize_minutiae(simg, sRidge_ends, sBifurcations)
+            sCombined_img = np.hstack((cv2.cvtColor(fimg, cv2.COLOR_GRAY2BGR), sVis))
+            cv2.imshow("%s - Original (L) | Vis (R)" % sTrain_file, sCombined_img)
+            cv2.waitKey(0)
+
 
 if __name__ == "__main__":
     train_directory = "train"
     subject_directory = "subjects"
-    fingerprint_matching(train_directory, subject_directory, threshold=0.001)
+    testMatching(train_directory, subject_directory, threshold=0.001)
