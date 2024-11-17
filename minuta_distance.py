@@ -5,6 +5,7 @@
 import cv2
 import os
 import numpy as np
+from scipy.spatial import distance
 
 
 def extractMinutiae(img):
@@ -22,6 +23,9 @@ def extractMinutiae(img):
 
     # Apply Gaussian blur to reduce noise
     blurred = cv2.GaussianBlur(img, (5, 5), 0)
+
+    # inversion is because bifurcations are breaks in the gaps,
+    # I do it up here so I can process the images with different constituents
     blurred_inv = cv2.GaussianBlur(img, (9, 9), 0)
 
     blurred_inv = cv2.bitwise_not(blurred_inv)
@@ -47,7 +51,6 @@ def extractMinutiae(img):
 
     # Perform skeletonization
     skeleton = cv2.ximgproc.thinning(binaryImg)
-
     skeleton_inv = cv2.ximgproc.thinning(binaryImg_inv)
 
     # Find ridge ends and bifurcations with stricter sensitivity
@@ -62,9 +65,8 @@ def extractMinutiae(img):
                 neighborhood = skeleton[i - 2:i + 3, j - 2:j + 3]
                 white_pixels = np.sum(neighborhood == 255)
 
-                # Apply stricter rules for ridge endings and bifurcations
                 if white_pixels <= 3:
-                    #false positive
+                    # false positive, white pixel from noise
                     continue
                 elif white_pixels <= 4:  # Ridge ending
                     ridgeEnds.append((j, i))
@@ -78,9 +80,7 @@ def extractMinutiae(img):
                 neighborhood = skeleton_inv[i - 2:i + 3, j - 2:j + 3]
                 white_pixels = np.sum(neighborhood == 255)
 
-                # Apply stricter rules for ridge endings and bifurcations
                 if white_pixels <= 3:
-                    # false positive
                     continue
                 elif white_pixels <= 4:  # Ridge ending
                     bifurcations.append((j, i))
@@ -89,10 +89,10 @@ def extractMinutiae(img):
     ridgeEnds = filter_minutiae(ridgeEnds)
     bifurcations = filter_minutiae(bifurcations)
 
-    return ridgeEnds, bifurcations, binaryImg_inv, skeleton_inv
+    return ridgeEnds, bifurcations
 
 
-def filter_minutiae(minutiae, min_distance=1):
+def filter_minutiae(minutiae, min_distance=26):
     """
     Filter minutiae to remove duplicates and close-by points.
 
@@ -110,80 +110,143 @@ def filter_minutiae(minutiae, min_distance=1):
     return filtered
 
 
-def visualize_minutiae(img, ridge_ends, bifurcations):
+# Function to match fingerprints based on their feature vectors
+def match_fingerprints(features_1, features_2, threshold=0.6):
+    distance = np.linalg.norm(features_1 - features_2)
+    return distance < threshold
+
+
+def minutiae_to_descriptor(minutiae, scale_factor=100, histogram_bins=8):
     """
-    Visualize ridge endings and bifurcations on the fingerprint image.
+    Convert a set of minutiae points into a small array of numbers for matching.
 
     Parameters:
-        img (numpy.ndarray): Original fingerprint image.
-        ridge_ends (list): List of (x, y) coordinates of ridge endings.
-        bifurcations (list): List of (x, y) coordinates of bifurcations.
+        minutiae (list of tuples): List of (x, y) coordinates of minutiae points.
+        scale_factor (int): Factor to normalize distances for histogram computation.
+        histogram_bins (int): Number of bins for the angular and distance histograms.
+
+    Returns:
+        numpy.ndarray: Descriptor array representing the fingerprint minutiae.
     """
-    # Convert the grayscale image to a color image for visualization
-    visual_img = cv2.cvtColor(img, cv2.COLOR_GRAY2BGR)
+    if len(minutiae) < 2:
+        minutiae += [0,0], [1,0], [0,1] ##todo, error handling
 
-    # Draw ridge endings (in green)
-    for x, y in ridge_ends:
-        cv2.circle(visual_img, (x, y), 3, (0, 255, 0), -1)
+    # Normalize the minutiae to have mean 0 (translation invariance)
+    minutiae = np.array(minutiae)
+    mean_x, mean_y = np.mean(minutiae, axis=0)
+    normalized = minutiae - [mean_x, mean_y]
 
-    # Draw bifurcations (in red)
-    for x, y in bifurcations:
-        cv2.circle(visual_img, (x, y), 3, (0, 0, 255), -1)
+    # Compute pairwise distances and angles between minutiae
+    descriptors = []
+    for i, (x1, y1) in enumerate(normalized):
+        for j, (x2, y2) in enumerate(normalized):
+            if i >= j:  # Avoid duplicate pairs
+                continue
+            # Distance between points
+            dist = np.linalg.norm([x2 - x1, y2 - y1]) / scale_factor
+            # Angle between points (in radians)
+            angle = np.arctan2(y2 - y1, x2 - x1)
+            # Wrap angle to [0, 2*pi]
+            angle = angle if angle >= 0 else angle + 2 * np.pi
+            descriptors.append((dist, angle))
 
-    return visual_img
+    # Convert descriptors into histograms
+    descriptors = np.array(descriptors)
+    if descriptors.size == 0:
+        return np.zeros(histogram_bins * 2)
+
+    # Distance histogram
+    distance_hist, _ = np.histogram(descriptors[:, 0], bins=histogram_bins, range=(0, 1))
+    # Angle histogram
+    angle_hist, _ = np.histogram(descriptors[:, 1], bins=histogram_bins, range=(0, 2 * np.pi))
+
+    # Concatenate histograms into a single descriptor
+    fingerprint_descriptor = np.concatenate([distance_hist, angle_hist])
+
+    # Normalize the descriptor to sum to 1 (optional for matching robustness)
+    fingerprint_descriptor = fingerprint_descriptor / np.sum(fingerprint_descriptor)
+
+    return fingerprint_descriptor
 
 
-def main():
-    # Define the folder containing fingerprint images
-    folder_path = "train"
+def fingerprint_matching(train_dir, subject_dir, threshold=0.7):
+    train_descriptors = {}
+    total_comparisons = 0
+    total_accepts = 0
+    total_rejects = 0
+    false_accepts = 0
+    false_rejects = 0
+    true_accepts = 0
+    true_rejects = 0
 
-    # Verify the folder exists
-    if not os.path.exists(folder_path):
-        print(f"Folder '{folder_path}' does not exist.")
-        return
+    # Extract descriptors for training images
+    print("Processing training images...")
+    for train_file in os.listdir(train_dir):
+        if train_file.endswith(".png"):  # Assuming PNG format
+            img_path = os.path.join(train_dir, train_file)
+            img = cv2.imread(img_path, cv2.IMREAD_GRAYSCALE)
+            ridge_ends, _ = extractMinutiae(img)
+            train_descriptors[train_file] = minutiae_to_descriptor(ridge_ends)
+            #print(train_file, minutiae_to_descriptor(ridge_ends))
 
-    # Get all image files in the folder
-    image_files = [f for f in os.listdir(folder_path) if f.endswith(('.png', '.jpg', '.jpeg', '.bmp', '.tif'))]
-    if not image_files:
-        print(f"No image files found in folder '{folder_path}'.")
-        return
+    print("Processing subject images and matching...")
+    for subject_file in os.listdir(subject_dir):
+        if subject_file.endswith(".png"):
+            img_path = os.path.join(subject_dir, subject_file)
+            img = cv2.imread(img_path, cv2.IMREAD_GRAYSCALE)
+            ridge_ends, _ = extractMinutiae(img)
+            subject_descriptor = minutiae_to_descriptor(ridge_ends)
 
-    print(f"Found {len(image_files)} images in '{folder_path}'.")
+            subject_id = subject_file.split("_")[0]
+            matched = False
+            for train_file, train_descriptor in train_descriptors.items():
+                train_id = train_file.split("_")[0]
+                score = np.linalg.norm(subject_descriptor - train_descriptor)
+                total_comparisons += 1
+                if score < threshold:
+                    total_accepts += 1
+                    matched = True
+                    if train_id == subject_id:
+                        true_accepts += 1
+                    else:
+                        false_accepts += 1
+                else:
+                    total_rejects += 1
+                    if train_id == subject_id:
+                        false_rejects += 1
+                    else:
+                        true_rejects += 1
 
-    for image_file in image_files:
-        # Load the fingerprint image
-        image_path = os.path.join(folder_path, image_file)
-        img = cv2.imread(image_path, cv2.IMREAD_GRAYSCALE)
+            if not matched and subject_id in train_descriptors:
+                false_rejects += 1
 
-        # Ensure image was loaded
-        if img is None:
-            print(f"Failed to load image: {image_file}")
-            continue
+            # Periodic reporting
+            if total_comparisons % 10000 == 0:
+                tar = true_accepts / (true_accepts + false_rejects) if true_accepts + false_rejects > 0 else 0
+                trr = true_rejects / (true_rejects + false_accepts) if true_rejects + false_accepts > 0 else 0
+                print(f"Comparisons: {total_comparisons}")
+                print(f"False Accept Rate: {false_accepts / total_comparisons:.4f}")
+                print(f"False Reject Rate: {false_rejects / total_comparisons:.4f}")
+                print(f"True Accept Rate: {tar:.4f}")
+                print(f"True Reject Rate: {trr:.4f}")
+                print(f"Total Accepts: {total_accepts}")
+                print(f"Total Rejects: {total_rejects}")
 
-        # Extract minutiae
-        ridge_ends, bifurcations, binary_img, skeleton = extractMinutiae(img)
+    # Final statistics
+    tar = true_accepts / (true_accepts + false_rejects) if true_accepts + false_rejects > 0 else 0
+    trr = true_rejects / (true_rejects + false_accepts) if true_rejects + false_accepts > 0 else 0
 
-        # Visualize minutiae
-        visual_img = visualize_minutiae(img, ridge_ends, bifurcations)
-
-        # Display processed images
-        cv2.imshow("Binarized Image (Adaptive Threshold)", binary_img)
-        cv2.imshow("Thinned (Skeletonized) Image", skeleton)
-
-        # Display side-by-side images
-        combined_img = np.hstack((cv2.cvtColor(img, cv2.COLOR_GRAY2BGR), visual_img))
-        cv2.imshow("Minutiae Detection - Original (Left) | Marked (Right)", combined_img)
-
-        # Wait for user input to move to the next fingerprint
-        print(f"Displaying minutiae for: {image_file}")
-        print("Press any key to move to the next fingerprint...")
-        cv2.waitKey(0)  # Wait indefinitely until a key is pressed
-
-    print("All images processed.")
-    cv2.destroyAllWindows()
+    print("\nFinal Statistics:")
+    print(f"Comparisons: {total_comparisons}")
+    print(f"False Accept Rate: {false_accepts / total_comparisons:.4f}")
+    print(f"False Reject Rate: {false_rejects / total_comparisons:.4f}")
+    print(f"True Accept Rate: {tar:.4f}")
+    print(f"True Reject Rate: {trr:.4f}")
+    print(f"Total Accepts: {total_accepts}")
+    print(f"Total Rejects: {total_rejects}")
 
 
 if __name__ == "__main__":
-    main()
-
-
+    train_directory = "train"
+    subject_directory = "subjects"
+    fingerprint_matching(train_directory, subject_directory, threshold=0.001)
