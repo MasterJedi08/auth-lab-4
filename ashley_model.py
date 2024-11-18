@@ -49,32 +49,35 @@ def load_image_pairs(image_dir):
         else:
             print(f"skip pair {pair} - failed image load")
     
-    train_files = images[:250]
-    test_files = images[250:500]
-    return train_files,test_files,pair_list
+    train_files = images[:1500]
+    test_files = images[1500:3000]
+    return train_files,test_files
 
 # ----
 
 # SSIM similarity for 2 imgs
 def compute_ssim(image1, image2):
+    #print("computing ssim")
     similarity = ssim(image1, image2, data_range=1.0)
-    print(similarity)
+    print("similarity: ", similarity)
     return(similarity)
 
 # goes through and teplate matches all img pairs
-def evaluate_template_matching(train_images, test_images, threshold=0.6):
+def evaluate_template_matching(train_images, threshold=0.2):
     correct_predictions = 0
-    total_predictions = len(test_images)
+    total_predictions = len(train_images)
+    #print("in evaluate")
     
-    for (train_fi, train_si), (test_fi, test_si) in zip(train_images, test_images):
-        # print(train_fi, train_si)
-        # Compute SSIM for both fi and si images
+    for train_fi, train_si in train_images:
+        #print("in for loop")
+        # compute ssim for both fi and si images
         ssim = compute_ssim(train_fi, train_si)
 
-        # Classify based on SSIM score
+        # classify based on ssim score
         if ssim >= threshold:
             correct_predictions += 1
     
+    #print(f"values: {correct_predictions} / {total_predictions}")
     accuracy = correct_predictions / total_predictions
     return accuracy
 
@@ -82,17 +85,19 @@ def evaluate_template_matching(train_images, test_images, threshold=0.6):
 
 def main():    
     # Path to the parent directory containing subfolders
-    img_dir = 'C:/Users/x/auth-lab-4/test_imgs'    
+    img_dir = 'C:/Users/ajspy/OneDrive/Desktop/RIT Fall 24/auth-lab-4/test_imgs'    
 
     # Load image pairs
     print("loading image pairs ...")
     train_images, test_images = load_image_pairs(img_dir)
 
-    print("train imgs", train_images)
+    print(len(train_images), " - ", test_images)
+
+    # print("train imgs: ", train_images)
 
     print("SSIM matching image pairs ... ")
     # template matching (SSIM) accuracy
-    ssim_accuracy = evaluate_template_matching(train_images, test_images)
+    ssim_accuracy = evaluate_template_matching(train_images)
 
     # Results
     print(f"Template Matching (SSIM) Accuracy: {ssim_accuracy:.4f}")
