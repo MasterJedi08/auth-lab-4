@@ -4,7 +4,8 @@
 import os
 import numpy as np
 from skimage.metrics import structural_similarity as ssim
-from tensorflow.keras.preprocessing.image import load_img, img_to_array
+from tensorflow import keras
+from keras._tf_keras.keras.preprocessing.image import load_img, img_to_array
 from skimage.color import rgb2gray
 
 # helper functions for loading/preprocessing images
