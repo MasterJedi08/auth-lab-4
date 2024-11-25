@@ -7,6 +7,7 @@ the product of the distances is stored for later comparison. The images
 are also compared with SSIM. Both methods have to return true for
 the fingerprint to be authenticated.
 """
+
 import os
 import numpy as np
 import cv2
@@ -166,7 +167,7 @@ def match_minutiae(minutiae1, minutiae2, threshold=0.7):
                 return True
     return False
 
-def evaluate_hybrid_method(images, ssim_threshold=0.85, minutiae_threshold=0.7):
+def evaluate_hybrid_method(images, ssim_threshold=0.2, minutiae_threshold=0.17):
     """Evaluates the hybrid method on a given dataset.
 
     Args:
@@ -178,50 +179,46 @@ def evaluate_hybrid_method(images, ssim_threshold=0.85, minutiae_threshold=0.7):
     Returns:
         A tuple containing the true accept rate, true reject rate, false accept rate, false reject rate, total accepts, and total rejects.
     """
+    total_accept = 0
+    total_reject = 0
+    true_accepts = 0
+    true_rejects = 0
+    false_accepts = 0
+    false_rejects = 0
 
-    far_list = []
-    frr_list = []
+    try:
+        for (img1, img2) in images:
+            ssim_score = compute_ssim(img1, img2)
+            minutiae_match = match_minutiae(extract_minutiae(img1), extract_minutiae(img2), minutiae_threshold)
 
-    for (img1, img2) in images:
-        ssim_score = compute_ssim(img1, img2)
-        minutiae_match = match_minutiae(extract_minutiae(img1), extract_minutiae(img2), minutiae_threshold)
-
-        if ssim_score >= ssim_threshold and minutiae_match:
-            # True Accept
-            pass
-        else:
-            # False Accept or False Reject
-            if ssim_score >= ssim_threshold:
-                far_list.append(1)
-                frr_list.append(0)
+            if ssim_score >= ssim_threshold and minutiae_match:
+                if ssim_score < 0.23:
+                    false_accepts +=1
+                else:
+                    true_accepts += 1
+                total_accept += 1
             else:
-                far_list.append(0)
-                frr_list.append(1)
+                # False Reject
+                if ssim_score > minutiae_threshold:
+                    false_rejects += 1
+                else:
+                    true_rejects += 1
+                total_reject +=1
 
-    far_array = np.array(far_list)
-    frr_array = np.array(frr_list)
+        tar = true_accepts / (true_accepts + false_rejects) if true_accepts + false_rejects > 0 else 0
+        trr = true_rejects / (true_rejects + false_accepts) if true_rejects + false_accepts > 0 else 0
 
-    far_max = np.max(far_array)
-    far_min = np.min(far_array)
-    far_avg = np.mean(far_array)
+        print("\nFinal Statistics:")
+        print(f"Comparisons: {total_accept + total_reject}")
+        print(f"False Accept Rate: {false_accepts / total_accept:.4f}")
+        print(f"False Reject Rate: {false_rejects / total_reject:.4f}")
+        print(f"True Accept Rate: {tar:.4f}")
+        print(f"True Reject Rate: {trr:.4f}")
+        print(f"Total Accepts: {total_accept}")
+        print(f"Total Rejects: {total_reject}")
 
-    frr_max = np.max(frr_array)
-    frr_min = np.min(frr_array)
-    frr_avg = np.mean(frr_array)
-
-    # Calculate EER
-    eer_threshold = np.argmin(np.abs(far_array - frr_array))
-    eer = (far_array[eer_threshold] + frr_array[eer_threshold]) / 2
-
-    print(f"FAR Max: {far_max:.4f}")
-    print(f"FAR Min: {far_min:.4f}")
-    print(f"FAR Avg: {far_avg:.4f}")
-
-    print(f"FRR Max: {frr_max:.4f}")
-    print(f"FRR Min: {frr_min:.4f}")
-    print(f"FRR Avg: {frr_avg:.4f}")
-
-    print(f"Equal Error Rate (EER): {eer:.4f}")
+    except Exception as e:
+        print(f"Error during evaluation: {e}")
 
 # Main function to load data and run evaluation
 def main():
@@ -230,13 +227,9 @@ def main():
     print("Loading image pairs...")
     images = load_image_pairs(img_dir)
 
-    # Split into train and test sets (adjust as needed)
-    train_images = images[:750] # Images before 
-    test_images = images[750:] # 1501:
-
     # Combined evaluation using both SSIM and Minutiae matching
     print("Evaluating hybrid method...")
-    evaluate_hybrid_method(test_images)
+    evaluate_hybrid_method(images)
 
 
 if __name__ == "__main__":
