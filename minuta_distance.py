@@ -5,7 +5,8 @@
 import cv2
 import os
 import numpy as np
-from scipy.spatial import distance
+from collections import defaultdict
+from glob import glob
 
 
 def enhance_fingerprint(img):
@@ -81,12 +82,12 @@ def claudeExtractMinutiae(img, min_distance=10):
         -8
     )
 
-    cv2.imshow('binary', binary)
+    #cv2.imshow('binary', binary)
 
     # Perform skeletonization
     skeleton = cv2.ximgproc.thinning(binary)
 
-    cv2.imshow('skel', skeleton)
+    #cv2.imshow('skel', skeleton)
 
     # Initialize lists for minutiae
     ridge_endings = []
@@ -94,38 +95,6 @@ def claudeExtractMinutiae(img, min_distance=10):
 
     # Pad image to handle border pixels
     padded = np.pad(skeleton, ((1, 1), (1, 1)), mode='constant', constant_values=0)
-
-    # Scan the image
-    rows, cols = skeleton.shape
-    for i in range(1, rows + 1):
-        for j in range(1, cols + 1):
-            if padded[i, j] == 255:  # Ridge pixel
-                # Get 3x3 neighborhood
-                neighborhood = padded[i - 1:i + 2, j - 1:j + 2]
-                cn = get_crossing_number(neighborhood)
-
-                # cn = 1 for ridge ending
-                # cn = 3 for bifurcation
-                if cn == 1:
-                    ridge_endings.append((j - 1, i - 1))
-                elif cn == 3:
-                    bifurcations.append((j - 1, i - 1))
-
-    def filter_close_points(points, min_dist):
-        """Remove points that are too close to each other"""
-        if not points:
-            return points
-
-        filtered = [points[0]]
-        for point in points[1:]:
-            if all(np.sqrt((p[0] - point[0]) ** 2 + (p[1] - point[1]) ** 2) >= min_dist
-                   for p in filtered):
-                filtered.append(point)
-        return filtered
-
-    # Filter out minutiae that are too close to each other
-    ridge_endings = filter_close_points(ridge_endings, min_distance)
-    bifurcations = filter_close_points(bifurcations, min_distance)
 
     return ridge_endings, bifurcations
 
@@ -143,18 +112,21 @@ def extractMinutiae(img):
     if img is None:
         raise ValueError("Invalid image provided.")
 
+    kernel = np.array([[-1, -1, -1], [-1, 9, -1], [-1, -1, -1]])
+    clahe = cv2.createCLAHE(clipLimit=7.0, tileGridSize=(9, 9))
+
     # Apply Gaussian blur to reduce noise
-    blurred = cv2.GaussianBlur(img, (5, 5), 0)
+    img = cv2.fastNlMeansDenoising(img, None, h=10, searchWindowSize=21) #denoise
+    img = cv2.GaussianBlur(img, (9, 9), 0)                               #blur
+    img = clahe.apply(img)                                               #clahe
 
     # inversion is because bifurcations are breaks in the gaps,
     # I do it up here so I can process the images with different constituents
-    blurred_inv = cv2.GaussianBlur(img, (9, 9), 0)
-
-    blurred_inv = cv2.bitwise_not(blurred_inv)
+    blurred_inv = cv2.bitwise_not(img)
 
     # Use adaptive thresholding for binarization
     binaryImg = cv2.adaptiveThreshold(
-        blurred,
+        img,
         255,
         cv2.ADAPTIVE_THRESH_GAUSSIAN_C,
         cv2.THRESH_BINARY_INV,
@@ -174,6 +146,9 @@ def extractMinutiae(img):
     # Perform skeletonization
     skeleton = cv2.ximgproc.thinning(binaryImg)
     skeleton_inv = cv2.ximgproc.thinning(binaryImg_inv)
+
+    #cv2.imshow('bImg', binaryImg)
+    #cv2.imshow('skele', skeleton)
 
     # Find ridge ends and bifurcations with stricter sensitivity
     ridgeEnds = []
@@ -232,12 +207,6 @@ def filter_minutiae(minutiae, min_distance=26):
     return filtered
 
 
-# Function to match fingerprints based on their feature vectors
-def match_fingerprints(features_1, features_2, threshold=0.6):
-    distance = np.linalg.norm(features_1 - features_2)
-    return distance < threshold
-
-
 def minutiae_to_descriptor(minutiae, scale_factor=100, histogram_bins=8):
     """
     Convert a set of minutiae points into a small array of numbers for matching.
@@ -291,136 +260,72 @@ def minutiae_to_descriptor(minutiae, scale_factor=100, histogram_bins=8):
     return fingerprint_descriptor
 
 
-def fingerprint_matching(train_dir, subject_dir, threshold=0.01):
-    train_descriptors = {}
-    total_comparisons = 0
-    total_accepts = 0
-    total_rejects = 0
+def calculate_far_frr(scores, threshold):
+    """Calculates FAR and FRR based on a threshold."""
     false_accepts = 0
     false_rejects = 0
-    true_accepts = 0
-    true_rejects = 0
+    correct_guesses = 0
+    wrong_guesses = 0
 
-    # Extract descriptors for training images
-    print("Processing training images...")
-    for train_file in os.listdir(train_dir):
-        if train_file.endswith(".png"):  # Assuming PNG format
-            img_path = os.path.join(train_dir, train_file)
-            img = cv2.imread(img_path, cv2.IMREAD_GRAYSCALE)
-            ridge_ends, _ = extractMinutiae(img)
-            train_descriptors[train_file] = minutiae_to_descriptor(ridge_ends)
-            #print(train_file, minutiae_to_descriptor(ridge_ends))
-
-    print("Processing subject images and matching...")
-    for subject_file in os.listdir(subject_dir):
-        if subject_file.endswith(".png"):
-            img_path = os.path.join(subject_dir, subject_file)
-            img = cv2.imread(img_path, cv2.IMREAD_GRAYSCALE)
-            ridge_ends, _ = extractMinutiae(img)
-            subject_descriptor = minutiae_to_descriptor(ridge_ends)
-
-            subject_id = subject_file.split("_")[0]
-            matched = False
-            for train_file, train_descriptor in train_descriptors.items():
-                train_id = train_file.split("_")[0]
-                score = np.linalg.norm(subject_descriptor - train_descriptor)
-                total_comparisons += 1
-                if score < threshold:
-                    total_accepts += 1
-                    matched = True
-                    if train_id == subject_id:
-                        true_accepts += 1
-                    else:
-                        false_accepts += 1
+    for label, score_list in scores.items():
+        for score, is_match in score_list:
+            if is_match:  # Genuine comparison
+                if score > threshold:
+                    false_rejects += 1
                 else:
-                    total_rejects += 1
-                    if train_id == subject_id:
-                        false_rejects += 1
-                    else:
-                        true_rejects += 1
+                    correct_guesses += 1
+            else:  # Impostor comparison
+                if score <= threshold:
+                    false_accepts += 1
+                else:
+                    wrong_guesses += 1
 
-            if not matched and subject_id in train_descriptors:
-                false_rejects += 1
+    total_genuine = sum([len([s for s, m in lst if m]) for lst in scores.values()])
+    total_impostor = sum([len([s for s, m in lst if not m]) for lst in scores.values()])
 
-            # Periodic reporting
-            if total_comparisons % 10000 == 0:
-                tar = true_accepts / (true_accepts + false_rejects) if true_accepts + false_rejects > 0 else 0
-                trr = true_rejects / (true_rejects + false_accepts) if true_rejects + false_accepts > 0 else 0
-                print(f"Comparisons: {total_comparisons}")
-                print(f"False Accept Rate: {false_accepts / total_comparisons:.4f}")
-                print(f"False Reject Rate: {false_rejects / total_comparisons:.4f}")
-                print(f"True Accept Rate: {tar:.4f}")
-                print(f"True Reject Rate: {trr:.4f}")
-                print(f"Total Accepts: {total_accepts}")
-                print(f"Total Rejects: {total_rejects}")
+    far = false_accepts / total_impostor if total_impostor else 0
+    frr = false_rejects / total_genuine if total_genuine else 0
 
-    # Final statistics
-    tar = true_accepts / (true_accepts + false_rejects) if true_accepts + false_rejects > 0 else 0
-    trr = true_rejects / (true_rejects + false_accepts) if true_rejects + false_accepts > 0 else 0
-
-    print("\nFinal Statistics:")
-    print(f"Comparisons: {total_comparisons}")
-    print(f"False Accept Rate: {false_accepts / total_comparisons:.4f}")
-    print(f"False Reject Rate: {false_rejects / total_comparisons:.4f}")
-    print(f"True Accept Rate: {tar:.4f}")
-    print(f"True Reject Rate: {trr:.4f}")
-    print(f"Total Accepts: {total_accepts}")
-    print(f"Total Rejects: {total_rejects}")
-
-def visualize_minutiae(img, ridge_ends, bifurcations):
-    """
-    Visualize ridge endings and bifurcations on the fingerprint image.
-
-    Parameters:
-        img (numpy.ndarray): Original fingerprint image.
-        ridge_ends (list): List of (x, y) coordinates of ridge endings.
-        bifurcations (list): List of (x, y) coordinates of bifurcations.
-    """
-    # Convert the grayscale image to a color image for visualization
-    visual_img = cv2.cvtColor(img, cv2.COLOR_GRAY2BGR)
-
-    # Draw ridge endings (in green)
-    for x, y in ridge_ends:
-        cv2.circle(visual_img, (x, y), 1, (0, 255, 0), -1)
-
-    # Draw bifurcations (in red)
-    for x, y in bifurcations:
-        cv2.circle(visual_img, (x, y), 1, (0, 0, 255), -1)
-
-    return visual_img
-
-def testMatching(train_dir, subject_dir, threshold=0.01):
-    fRidge_ends = []
-    fBifurcations = []
-    sRidge_ends = []
-    sBifurcations = []
-
-
-    # Extract descriptors for training images
-    print("Processing training images...")
-    for train_file in os.listdir(train_dir):
-        if train_file.endswith(".png") and train_file[0] == 'f':  # Assuming PNG format
-            fImg_path = os.path.join(train_dir, train_file)
-            fimg = cv2.imread(fImg_path, cv2.IMREAD_GRAYSCALE)
-            fRidge_ends, fBifurcations = claudeExtractMinutiae(fimg)
-
-            sTrain_file = 's' + train_file[1:]
-            sImg_path = os.path.join(train_dir, sTrain_file)
-            simg = cv2.imread(sImg_path, cv2.IMREAD_GRAYSCALE)
-            sRidge_ends, sBifurcations = claudeExtractMinutiae(simg)
-
-            # Display side-by-side images
-            fVis = visualize_minutiae(fimg, fRidge_ends, fBifurcations)
-            fCombined_img = np.hstack((cv2.cvtColor(fimg, cv2.COLOR_GRAY2BGR), fVis))
-            cv2.imshow("%s - Original (L) | Vis (R)" % train_file, fCombined_img)
-
-            sVis = visualize_minutiae(simg, sRidge_ends, sBifurcations)
-            sCombined_img = np.hstack((cv2.cvtColor(fimg, cv2.COLOR_GRAY2BGR), sVis))
-            cv2.imshow("%s - Original (L) | Vis (R)" % sTrain_file, sCombined_img)
-            cv2.waitKey(0)
+    return far, frr, correct_guesses, wrong_guesses
 
 
 if __name__ == "__main__":
-    train_directory = "train"
-    subject_directory = "subjects"
-    testMatching(train_directory, subject_directory, threshold=0.001)
+    train_dir  = "train"
+    test_dir = "test"
+    threshold = 0.065
+
+    # Dictionary to store scores: {id: [(score, is_match)]}
+    scores = defaultdict(list)
+
+    # Load images
+    reference_images = sorted(glob(os.path.join(train_dir, "f*.png")))
+    subject_images = sorted(glob(os.path.join(train_dir, "s*.png")))
+
+    # Match reference and subject images
+    for ref_path in reference_images:
+        ref_id = os.path.basename(ref_path).split('_')[0][1:]  # Extract ID
+        ref_image = cv2.imread(ref_path, cv2.IMREAD_GRAYSCALE)
+        ref_minutiae, _ = extractMinutiae(ref_image)
+        ref_descriptor = minutiae_to_descriptor(ref_minutiae)
+
+        for subj_path in subject_images:
+            subj_id = os.path.basename(subj_path).split('_')[0][1:]  # Extract ID
+            subj_image = cv2.imread(subj_path, cv2.IMREAD_GRAYSCALE)
+            subj_minutiae, _ = extractMinutiae(subj_image)
+            subj_descriptor = minutiae_to_descriptor(subj_minutiae)
+
+            # Calculate score
+            score = np.linalg.norm(subj_descriptor - ref_descriptor)
+
+            # Determine if it's a genuine or impostor comparison
+            is_match = ref_id == subj_id
+            scores[ref_id].append((score, is_match))
+
+    # Calculate FAR, FRR, and guess counts
+    far, frr, correct_guesses, wrong_guesses = calculate_far_frr(scores, threshold)
+
+    # Output results
+    print(f"False Acceptance Rate (FAR): {far:.4f}")
+    print(f"False Rejection Rate (FRR): {frr:.4f}")
+    print(f"Correct Guesses: {correct_guesses}")
+    print(f"Wrong Guesses: {wrong_guesses}")
