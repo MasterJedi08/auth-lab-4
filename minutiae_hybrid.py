@@ -99,6 +99,19 @@ def compute_ssim(img1, img2):
     Returns:
         The SSIM value.
     """
+    # Preprocessing
+    img1 = cv2.GaussianBlur(img1, (5, 5), 0)  # Apply Gaussian blur
+    img2 = cv2.GaussianBlur(img2, (5, 5), 0)
+
+    # Normalize images to 0-1 range
+    img1 = img1 / 255.0
+    img2 = img2 / 255.0
+
+    # Ensure images are grayscale
+    if len(img1.shape) == 3:
+        img1 = rgb2gray(img1)
+    if len(img2.shape) == 3:
+        img2 = rgb2gray(img2)
 
     return ssim(img1, img2, data_range=1.0)
 
@@ -128,7 +141,7 @@ def extract_minutiae(img):
 
     return minutiae
 
-def match_minutiae(minutiae1, minutiae2, threshold=0.6):
+def match_minutiae(minutiae1, minutiae2, threshold=0.7):
     """Matches two sets of minutiae points.
 
     Args:
@@ -153,7 +166,7 @@ def match_minutiae(minutiae1, minutiae2, threshold=0.6):
                 return True
     return False
 
-def evaluate_hybrid_method(train_images, test_images, ssim_threshold=0.85, minutiae_threshold=0.6):
+def evaluate_hybrid_method(images, ssim_threshold=0.85, minutiae_threshold=0.7):
     """Evaluates the hybrid method on a given dataset.
 
     Args:
@@ -166,27 +179,49 @@ def evaluate_hybrid_method(train_images, test_images, ssim_threshold=0.85, minut
         A tuple containing the true accept rate, true reject rate, false accept rate, false reject rate, total accepts, and total rejects.
     """
 
-    correct, total, false_accepts, false_rejects = 0, 0, 0, 0
+    far_list = []
+    frr_list = []
 
-    for (train_img1, train_img2), (test_img1, test_img2) in zip(train_images, test_images):
-        ssim_score = compute_ssim(train_img1, test_img1)
-        minutiae_match = match_minutiae(extract_minutiae(train_img1), extract_minutiae(test_img1), minutiae_threshold)
+    for (img1, img2) in images:
+        ssim_score = compute_ssim(img1, img2)
+        minutiae_match = match_minutiae(extract_minutiae(img1), extract_minutiae(img2), minutiae_threshold)
 
         if ssim_score >= ssim_threshold and minutiae_match:
-            correct += 1
+            # True Accept
+            pass
         else:
-            total += 1
+            # False Accept or False Reject
             if ssim_score >= ssim_threshold:
-                false_accepts += 1
+                far_list.append(1)
+                frr_list.append(0)
             else:
-                false_rejects += 1
+                far_list.append(0)
+                frr_list.append(1)
 
-    far = false_accepts / total
-    frr = false_rejects / total
-    true_accept_rate = correct / total
-    true_reject_rate = 1 - true_accept_rate
+    far_array = np.array(far_list)
+    frr_array = np.array(frr_list)
 
-    return true_accept_rate, true_reject_rate, far, frr, correct, total
+    far_max = np.max(far_array)
+    far_min = np.min(far_array)
+    far_avg = np.mean(far_array)
+
+    frr_max = np.max(frr_array)
+    frr_min = np.min(frr_array)
+    frr_avg = np.mean(frr_array)
+
+    # Calculate EER
+    eer_threshold = np.argmin(np.abs(far_array - frr_array))
+    eer = (far_array[eer_threshold] + frr_array[eer_threshold]) / 2
+
+    print(f"FAR Max: {far_max:.4f}")
+    print(f"FAR Min: {far_min:.4f}")
+    print(f"FAR Avg: {far_avg:.4f}")
+
+    print(f"FRR Max: {frr_max:.4f}")
+    print(f"FRR Min: {frr_min:.4f}")
+    print(f"FRR Avg: {frr_avg:.4f}")
+
+    print(f"Equal Error Rate (EER): {eer:.4f}")
 
 # Main function to load data and run evaluation
 def main():
@@ -196,19 +231,12 @@ def main():
     images = load_image_pairs(img_dir)
 
     # Split into train and test sets (adjust as needed)
-    train_images = images[:750]
-    test_images = images[750:]
+    train_images = images[:750] # Images before 
+    test_images = images[750:] # 1501:
 
     # Combined evaluation using both SSIM and Minutiae matching
     print("Evaluating hybrid method...")
-    true_accept_rate, true_reject_rate, far, frr, total_accepts, total_rejects = evaluate_hybrid_method(train_images, test_images)
-
-    print(f"True Accept Rate: {true_accept_rate:.4f}")
-    print(f"True Reject Rate: {true_reject_rate:.4f}")
-    print(f"False Accept Rate (FAR): {far:.4f}")
-    print(f"False Reject Rate (FRR): {frr:.4f}")
-    print(f"Total Accepts: {total_accepts}")
-    print(f"Total Rejects: {total_rejects}")
+    evaluate_hybrid_method(test_images)
 
 
 if __name__ == "__main__":
